@@ -1,0 +1,355 @@
+---
+title: "Report Project 1"
+author: "Oswaldo Orona - Practical Statistical Learning Fall 2020"
+output: 
+  html_document: 
+    toc: yes
+urlcolor: cyan
+---
+
+
+# Importing libraries
+
+```{r load libraries, echo=FALSE}
+library(xgboost)
+```
+
+
+# Data Analysis Functions
+
+```{r functions, echo=FALSE}
+getCategoricalVar = function(df){
+  cat.var <- colnames(df)[
+    which(sapply(df, function(x) mode(x)=="character"))]
+  cat.var
+}
+
+createExpandedMatrix = function(df){
+  catVar=getCategoricalVar(df)
+  expandedM <- df[, !colnames(df) %in% catVar, 
+                          drop=FALSE]
+  n <- nrow(df)
+  for(var in catVar){
+    mylevels = sort(unique(df[, var]))
+    m = length(mylevels)
+    m = ifelse(m>2, m, 1)
+    temp_level = matrix(0, n, m)
+    col.names = NULL
+    for(j in 1:m){
+      temp_level[df[, var]==mylevels[j], j] <- 1
+      col.names = c(col.names, paste(var, '_', mylevels[j], sep=''))
+    }
+    colnames(temp_level) = col.names
+    expandedM = cbind(expandedM, temp_level)
+  }
+  expandedM
+}
+
+adjustMatrix = function (sourceMatrix,colnames){
+  
+  expandedMatrix=createExpandedMatrix(sourceMatrix)
+  sourcenames=colnames(expandedMatrix)
+  n=nrow(sourceMatrix)
+  finalMatrix=data.frame(row.names=1:n)  
+  for (colname in colnames){
+    if (colname %in% sourcenames){
+      finalMatrix=cbind(finalMatrix,expandedMatrix[,colname,drop=FALSE])
+    }
+    else{
+      zero_level=matrix(0,n,1)
+      colnames(zero_level)=colname
+      finalMatrix=cbind(finalMatrix,zero_level)
+    }
+  }
+  finalMatrix
+}
+
+# Train Model
+getresxgboost = function(trainExp,testExp,train.y,test.y,test,max_depth=6, eta=0.05, nrounds=5000, subsample=0.5, nthread=4) {
+set.seed(2685)
+start.time = Sys.time()
+
+params <- list(
+    eta = eta,
+    max_depth = max_depth,
+    min_child_weight = 3,
+    subsample = subsample,
+    colsample_bytree = 0.5,
+    gamma=0,
+    lambda=0,
+    alpha=1
+)
+xgb.model = xgboost(data = as.matrix(trainExp), 
+                     label = train.y,
+                     nrounds = nrounds,
+                     params = params, nthread = nthread,
+                     verbose = FALSE)
+end.time = Sys.time()
+time.taken = end.time - start.time
+
+# Prediction
+pred=exp(predict(xgb.model,as.matrix(testExp)))
+
+pred=cbind(test["PID"],pred)
+names(pred)[2]="Sale_Price"
+
+pred = merge(pred, test.y, by="PID")
+rmse=sqrt(mean((log(pred$Sale_Price) - log(pred$True_Sale_Price))^2))
+return(list(rmse=rmse,time=time.taken))
+}
+
+# Loading Data
+
+loadtrain = function(split){
+  train = read.csv(file.path(paste("./split_",split,sep=""),"train.csv"))
+  return (train)
+}
+
+loadtest = function(split){
+  test = read.csv(file.path(paste("./split_",split,sep=""),"test.csv"))
+  return (test)
+}
+
+loadtesty =function(split){
+  test.y = read.csv(file.path(paste("./split_",split,sep=""),"test_y.csv"))
+  return (test.y)
+}
+
+
+
+```
+
+
+```{r load data, echo=FALSE}
+train =loadtrain(1)
+test = loadtest(1)
+test.y = loadtesty(1)
+
+# Removing columns and changing names
+names(test.y)[2] = "True_Sale_Price"
+
+train.x =train[-1]
+train.x =train.x[-82]
+
+train.y=log(train[,"Sale_Price"])
+
+test.x=test[-1]
+
+# Modifying Data
+
+trainM=createExpandedMatrix(train.x)
+
+ctrainM=colnames(trainM)
+
+testExp=adjustMatrix(test.x,ctrainM)
+```
+
+```{r}
+hyper_grid <- expand.grid(
+  eta = c(0.04,0.05,0.06),
+  max_depth = 6,
+  subsample = 0.8,
+  colsample_bytree = 0.5,
+  gamma=c(0,0.1,1),
+  lambda=c(0,0.1,1),
+  alpha=c(0,0.1,1),
+  rmse = 0,          # a place to dump RMSE results
+  trees = 0          # a place to dump required number of trees
+)
+
+
+
+dim(hyper_grid)
+
+# grid search
+n=nrow(hyper_grid)
+for(i in seq_len(nrow(hyper_grid))) {
+  set.seed(2685)
+  if (hyper_grid$trees[i]==0){
+    train_time <- system.time(m <- xgb.cv(
+      data =  as.matrix(trainM),
+      label = train.y,
+      nrounds = 1500,
+      early_stopping_rounds = 50, 
+      nfold = 10,
+      verbose = FALSE,
+      nthread=30,
+      params = list( 
+        eta = hyper_grid$eta[i], 
+        max_depth = hyper_grid$max_depth[i],
+        subsample = hyper_grid$subsample[i],
+        colsample_bytree = hyper_grid$colsample_bytree[i],
+        gamma = hyper_grid$gamma[i], 
+        lambda = hyper_grid$lambda[i], 
+        alpha = hyper_grid$alpha[i]
+      ) 
+     )
+   )
+  cat("loop",i,"\tof",n, "\tcalculated","\ttime",train_time,"\n")
+  hyper_grid$rmse[i] <- min(m$evaluation_log$test_rmse_mean)
+  hyper_grid$trees[i] <- m$best_iteration
+  }
+  else {
+    cat("loop",i,"\tof",n, "\tskipped\n")
+  }
+}
+
+which.min(hyper_grid$rmse[1:which.min(hyper_grid$rmse)-1])
+hyper_grid[which.min(hyper_grid$rmse[1:which.min(hyper_grid$rmse)-1]),]
+
+hyper_grid
+
+
+0.1242723
+```
+
+
+{
+
+
+}
+```{r variable rounds, echo=FALSE,cache=TRUE}
+listrounds=seq(50,1550,by=100)
+nlistrounds=length(listrounds)
+lrmse=vector()
+ltime=vector()
+
+for (i in seq(nlistrounds)){
+    res=getresxgboost(trainM,testExp,train.y,test.y,test,6,0.05,listrounds[i],0.3,30)
+    lrmse[i]=res$rmse
+    ltime[i]=res$time
+    cat("rounds=",listrounds[i],"\t","error=",lrmse[i],"\t","time=",ltime[i],"\n")
+}
+```
+```{r variable depth, echo=FALSE,cache=TRUE}
+listdepth=seq(2,20)
+nlistdepth=length(listdepth)
+lrmsed=vector()
+ltimed=vector()
+
+for (i in seq(nlistdepth)){
+    res=getresxgboost(trainExp,testExp,train.y,test.y,test,listdepth[i],0.05,1000,0.5,30)
+    lrmsed[i]=res$rmse
+    ltimed[i]=res$time
+    cat("depth=",listdepth[i],"\t","error=",lrmsed[i],"\t","time=",ltimed[i],"\n")
+}
+```
+
+```{r variable eta, echo=FALSE,cache=TRUE}
+listeta=seq(0.05,0.95,by=0.1)
+nlisteta=length(listeta)
+lrmsee=vector()
+ltimee=vector()
+
+for (i in seq(nlisteta)){
+    res=getresxgboost(trainExp,testExp,train.y,test.y,test,6,listeta[i],1000,0.5,30)
+    lrmsee[i]=res$rmse
+    ltimee[i]=res$time
+    cat("eta=",listeta[i],"\t","error=",lrmsee[i],"\t","time=",ltimee[i],"\n")
+}
+```
+
+```{r variable subsampling, echo=FALSE,cache=TRUE}
+listsub=seq(0.05,0.95,by=0.1)
+nlistsub=length(listsub)
+lrmses=vector()
+ltimes=vector()
+
+for (i in seq(nlistsub)){
+    res=getresxgboost(trainExp,testExp,train.y,test.y,test,6,0.05,1000,listsub[i],30)
+    lrmses[i]=res$rmse
+    ltimes[i]=res$time
+    cat("subsampling=",listsub[i],"\t","error=",lrmses[i],"\t","time=",ltimes[i],"\n")
+}
+```
+```{r echo=FALSE}
+res=getresxgboost(trainExp,testExp,train.y,test.y,test,6,0.05,5000,0.5,30)
+cat("depth=",6,"\t","error=",res$rmse,"\t","time=",res$time,"\n")
+
+res=getresxgboost(trainExp,testExp,train.y,test.y,test,6,0.05,5000,0.3,30)
+cat("depth=",6,"\t","error=",res$rmse,"\t","time=",res$time,"\n")
+
+res=getresxgboost(trainExp,testExp,train.y,test.y,test,6,0.05,1000,0.3,30)
+cat("depth=",6,"\t","error=",res$rmse,"\t","time=",res$time,"\n")
+```
+
+
+# plot
+
+```{r plot, echo=FALSE}
+par(mfrow=c(1,2))
+plot(listrounds,lrmse,ylim=c(0.1,1),xlab="Rounds",ylab="RMSE")
+plot(listrounds,ltime,xlab="Rounds",ylab="Seconds")
+
+par(mfrow=c(1,2))
+plot(listdepth,lrmsed,ylim=c(0.1,0.3),xlab="Depth",ylab="RMSE")
+plot(listdepth,ltimed,xlab="Depth",ylab="Seconds")
+
+par(mfrow=c(1,2))
+plot(listeta,lrmsee,ylim=c(0.1,0.3),xlab="ETA",ylab="RMSE")
+plot(listeta,ltimee,xlab="ETA",ylab="Seconds")
+
+par(mfrow=c(1,2))
+plot(listsub,lrmses,ylim=c(0.1,0.3),xlab="SubSampling",ylab="RMSE")
+plot(listsub,ltimes,xlab="Subsampling",ylab="Seconds")
+```
+
+
+
+```{r Optimal settings, echo=FALSE,cache=TRUE}
+
+testparameters = function(max_depth=6, eta=0.05, nrounds=5000, subsample=0.5, nthread=4) {
+  rmse=vector()
+  time=vector()
+    
+  for (i in seq(10)){
+    train =loadtrain(i)
+    test = loadtest(i)
+    test.y = loadtesty(i)
+    
+    # Removing columns and changing names
+    names(test.y)[2] = "True_Sale_Price"
+    
+    train.x =train[-1]
+    train.x =train.x[-82]
+    
+    train.y=log(train[,"Sale_Price"])
+    
+    test.x=test[-1]
+    #Final data for analysis
+    total=rbind(train.x,test.x)
+    
+    # Modifying Data
+    
+    finalM=createExpandedMatrix(total)
+    
+    trainM=createExpandedMatrix(train.x)
+    testM=createExpandedMatrix(test.x)
+    
+    cfinalM=colnames(finalM)
+    
+    trainExp=expandMatrix(trainM,cfinalM)
+    testExp=expandMatrix(testM,cfinalM)
+    res=getresxgboost(trainExp,testExp,train.y,test.y,test,max_depth ,eta,nrounds,subsample,nthread)
+    cat("split=",i,"\t","error=",res$rmse,"\t","time=",res$time,"\n")
+    rmse[i]=res$rmse
+    time[i]=res$time
+  }
+  return(rmse)
+}
+
+res1=testparameters(6,0.05,1000,0.5,30)
+res2=testparameters(6,0.05,1000,0.4,30)
+res3=testparameters(6,0.05,1000,0.3,30)
+res4=testparameters(6,0.05,1000,0.2,30)
+
+```
+
+```{r echo=FALSE}
+plot(res1,type="o",col="red",ylim=c(0.1,0.14),xlab="Split",ylab="RMSE")
+lines(res2,col="blue",type="o")
+lines(res3,col="green",type="o",pch=22, lty=2)
+lines(res4,col="black",type="o",pch=22, lty=2)
+```
+
+

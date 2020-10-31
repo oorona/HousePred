@@ -1,0 +1,109 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(glmnet)
+getCategoricalVar = function(df){
+  cat.var <- colnames(df)[
+    which(sapply(df, function(x) mode(x)=="character"))]
+  cat.var
+}
+
+createExpandedMatrix = function(df){
+  catVar=getCategoricalVar(df)
+  expandedM <- df[, !colnames(df) %in% catVar, 
+                          drop=FALSE]
+  n <- nrow(df)
+  for(var in catVar){
+    mylevels = sort(unique(df[, var]))
+    m = length(mylevels)
+    m = ifelse(m>2, m, 1)
+    temp_level = matrix(0, n, m)
+    col.names = NULL
+    for(j in 1:m){
+      temp_level[df[, var]==mylevels[j], j] <- 1
+      col.names = c(col.names, paste(var, '_', mylevels[j], sep=''))
+    }
+    colnames(temp_level) = col.names
+    expandedM = cbind(expandedM, temp_level)
+  }
+  expandedM
+}
+
+adjustMatrix = function (sourceMatrix,colnames){
+  
+  expandedMatrix=createExpandedMatrix(sourceMatrix)
+  sourcenames=colnames(expandedMatrix)
+  n=nrow(sourceMatrix)
+  finalMatrix=data.frame(row.names=1:n)  
+  for (colname in colnames){
+    if (colname %in% sourcenames){
+      finalMatrix=cbind(finalMatrix,expandedMatrix[,colname,drop=FALSE])
+    }
+    else{
+      zero_level=matrix(0,n,1)
+      colnames(zero_level)=colname
+      finalMatrix=cbind(finalMatrix,zero_level)
+    }
+  }
+  finalMatrix
+}
+
+
+
+alpha=1
+dropped_cols = c()
+train <- read.csv("train.csv")
+train.y=log(train[,"Sale_Price"])
+train.x2 =train[-1]
+train.x2 =train.x2[-82]
+train.x2=train.x2[ , !(names(train.x2) %in% dropped_cols)]
+train.x2$Garage_Yr_Blt[is.na(train.x2$Garage_Yr_Blt)] = 0
+train.x2$Garage_Yr_Blt[train.x2$Garage_Yr_Blt>2010]=2007
+trainM2=createExpandedMatrix(train.x2)
+
+#lfit=glmnet(as.matrix(trainM2),train.y)
+
+#plot(lfit,xvar="lambda",label=TRUE)
+
+cv.res=cv.glmnet(as.matrix(trainM2),train.y,alpha=alpha)
+
+#plot(cv.res)
+
+test <- read.csv("test.csv")
+
+test.x=test[-1]
+test.x2=test.x[ , !(names(test.x) %in% dropped_cols)]
+test.x2$Garage_Yr_Blt[is.na(test.x2$Garage_Yr_Blt)] = 0
+test.x2$Garage_Yr_Blt[test.x2$Garage_Yr_Blt>2010]=2007
+testM2=createExpandedMatrix(test.x2)
+ctrainM2=colnames(trainM2)
+testM2=adjustMatrix(test.x2,ctrainM2)
+
+test_y <- read.csv("test_y.csv")
+test.y=log(test_y[,"Sale_Price"])
+
+
+lfit=glmnet(as.matrix(trainM2),train.y,alpha=alpha)
+pred=predict(lfit,as.matrix(testM2))
+rmse=sqrt(apply((test.y-pred)^2,2,mean))
+
+#plot(log(lfit$lambda),rmse,type='b',xlab="Log(lambda)")
+
+blambda=lfit$lambda[order(rmse)[1]]
+
+blambda
+
+
+pred=predict(lfit,as.matrix(testM2),s=blambda,alpha=alpha)
+sqrt(mean((test.y-pred)^2))
+pred=predict(lfit,as.matrix(testM2),s=cv.res$lambda.1se)
+sqrt(mean((test.y-pred)^2))
+pred=predict(lfit,as.matrix(testM2),s=cv.res$lambda.min)
+sqrt(mean((test.y-pred)^2))
+
+```
+
+

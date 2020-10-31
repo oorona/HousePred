@@ -1,9 +1,4 @@
-set.seed(2685)
-library(xgboost)
 library(glmnet)
-
-
-# function definitions
 getCategoricalVar = function(df){
   cat.var <- colnames(df)[
     which(sapply(df, function(x) mode(x)=="character"))]
@@ -13,7 +8,7 @@ getCategoricalVar = function(df){
 createExpandedMatrix = function(df){
   catVar=getCategoricalVar(df)
   expandedM <- df[, !colnames(df) %in% catVar, 
-                          drop=FALSE]
+                  drop=FALSE]
   n <- nrow(df)
   for(var in catVar){
     mylevels = sort(unique(df[, var]))
@@ -50,34 +45,17 @@ adjustMatrix = function (sourceMatrix,colnames){
   finalMatrix
 }
 
-#Loading  train data
-train <- read.csv("train.csv")
 
-#Data Prep gbm
-# Removing columns
-train.x =train[-1]
-train.x =train.x[-82]
-# Extracting training y
+
+alpha=1
+dropped_cols = c()#c('Street', 'Utilities',  'Condition_2', 'Roof_Matl', 'Heating', 'Pool_QC', 'Misc_Feature', 'Low_Qual_Fin_SF', 'Pool_Area', 'Longitude','Latitude')
+quan.value <- 0.95             
+winsor.vars <- c("Lot_Frontage", "Lot_Area", "Mas_Vnr_Area", "BsmtFin_SF_2", "Bsmt_Unf_SF", "Total_Bsmt_SF", "Second_Flr_SF", 'First_Flr_SF', "Gr_Liv_Area", "Garage_Area") 
+train <- read.csv("train.csv")
 train.y=log(train[,"Sale_Price"])
-# Create train Matrix
-trainM=createExpandedMatrix(train.x)
-ctrainM=colnames(trainM)
-
-
-#Data prep Linear Regression
-
-# List of irrelevant columns
-quan.value = 0.95        
-alpha=0.2
-dropped_cols = c("BsmtFin_SF_2", "Bsmt_Unf_SF", "Total_Bsmt_SF","Second_Flr_SF", 'First_Flr_SF')
-winsor.vars <- c("Lot_Frontage", "Lot_Area","Mas_Vnr_Area", "Gr_Liv_Area", "Garage_Area")
-
-train <- read.csv("train.csv")
-# Eliminate columns
 train.x2 =train[-1]
 train.x2 =train.x2[-82]
 train.x2=train.x2[ , !(names(train.x2) %in% dropped_cols)]
-# Fix data Issues
 train.x2$Garage_Yr_Blt[is.na(train.x2$Garage_Yr_Blt)] = 0
 train.x2$Garage_Yr_Blt[train.x2$Garage_Yr_Blt>2010]=2007
 
@@ -87,42 +65,26 @@ for(var in winsor.vars){
   tmp[tmp > myquan] <- myquan
   train.x2[, var] <- tmp
 }
-
-# Create train Matrix
 trainM2=createExpandedMatrix(train.x2)
 ctrainM2=colnames(trainM2)
 
 
-# train Model gbm
-params <- list(
-  eta = 0.05,
-  max_depth = 6,
-  subsample = 0.8,
-  colsample_bytree = 0.5,
-  gamma=0,
-  lambda=0.1,
-  alpha=0
-)
-xgb.model <- xgboost(data = as.matrix(trainM), 
-                     label = train.y,
-                     params = params,
-                     nrounds=532,
-                     verbose = FALSE)
+#lfit=glmnet(as.matrix(trainM2),train.y)
 
-
-# Train Model linear
-cv.out <- cv.glmnet(as.matrix(trainM2), train.y, alpha = alpha)
+#plot(lfit,xvar="lambda",label=TRUE)
 
 
 
-# Load test data
+#plot(cv.res)
+
 test <- read.csv("test.csv")
 
-# Removing columns
 test.x=test[-1]
 test.x2=test.x[ , !(names(test.x) %in% dropped_cols)]
 test.x2$Garage_Yr_Blt[is.na(test.x2$Garage_Yr_Blt)] = 0
 test.x2$Garage_Yr_Blt[test.x2$Garage_Yr_Blt>2010]=2007
+
+
 
 for(var in winsor.vars){
   tmp <- test.x2[, var]
@@ -132,23 +94,56 @@ for(var in winsor.vars){
 }
 
 
-testM=adjustMatrix(test.x,ctrainM)
 testM2=adjustMatrix(test.x2,ctrainM2)
 
-# Prediction gbm
-pred=exp(predict(xgb.model,as.matrix(testM)))
-pred=cbind(test["PID"],pred)
-names(pred)[2]="Sale_Price"
-write.csv(pred,"mysubmission1.txt",row.names = FALSE)
+test_y <- read.csv("test_y.csv")
+test.y=log(test_y[,"Sale_Price"])
 
 
-# Prediction linear
+#lfit=glmnet(as.matrix(trainM2),train.y,alpha=alpha)
+#pred=predict(lfit,as.matrix(testM2))
+#rmse=sqrt(apply((test.y-pred)^2,2,mean))
+
+#plot(log(lfit$lambda),rmse,type='b',xlab="Log(lambda)")
+
+#blambda=lfit$lambda[order(rmse)[1]]
+
+#blambda
 
 
-pred2 <-exp(predict(cv.out, s = cv.out$lambda.min, newx = as.matrix(testM2)))
 
 
-pred2=cbind(test["PID"],pred2)
-names(pred2)[2]="Sale_Price"
-write.csv(pred2,"mysubmission2.txt",row.names = FALSE)
+cv.res=cv.glmnet(as.matrix(trainM2),train.y,alpha=1)
+sel.vars <- predict(cv.res, type="nonzero", s = cv.res$lambda.1se)$X1
+#sel.vars
 
+alphas=seq(0.2,0.2,0.1)
+res=rep(0,length(alphas))
+
+for(i in (1:length(alphas))) {
+  cv.res <- cv.glmnet(as.matrix(trainM2[, sel.vars]), 
+                    train.y, alpha = 0)
+  pred <-predict(cv.res, s = cv.res$lambda.1se, 
+              newx = as.matrix(testM2[, sel.vars]))
+  res[i]=sqrt(mean((test.y-pred)^2))
+}
+
+cat("rmse=",min(res),"alpha=",alphas[which.min(res)],"\n")
+
+for(i in (1:length(alphas))) {
+  cv.out <- cv.glmnet(as.matrix(trainM2), train.y, alpha = alphas[i])
+  pred <-predict(cv.out, s = cv.out$lambda.min, newx = as.matrix(testM2))
+
+  res[i]=sqrt(mean((test.y-pred)^2))
+}
+
+cat("rmse=",min(res),"alpha=",alphas[which.min(res)],"\n")
+
+#colnames(trainM2) == colnames(testM2)
+#pred=predict(lfit,as.matrix(testM2),s=cv.reso$lambda.min,alpha=alpha)
+#sqrt(mean((test.y-pred)^2))
+
+#pred=predict(lfit,as.matrix(testM2),s=cv.res$lambda.1se)
+#sqrt(mean((test.y-pred)^2))
+#pred=predict(lfit,as.matrix(testM2),s=cv.res$lambda.min)
+#sqrt(mean((test.y-pred)^2))
